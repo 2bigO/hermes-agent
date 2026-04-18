@@ -9885,6 +9885,73 @@ class GatewayRunner:
                 except Exception as _e:
                     logger.exception("hf tracker callback error: %s", _e)
 
+            def _pi_project_tracker_send_sync(
+                _tool_call_id, function_name, function_args, function_result
+            ) -> None:
+                if not function_name.startswith("pi_project_"):
+                    return
+                if not _status_adapter or not source.chat_id:
+                    return
+                try:
+                    import json as _json
+
+                    payload = _json.loads(function_result or "")
+                    summary = str(payload.get("summary") or "").strip()
+                    if not summary:
+                        return
+                    project_id = str(
+                        payload.get("project_id")
+                        or function_args.get("project_id")
+                        or "default"
+                    )
+                    tracker_key = ("pi_project", session_key, project_id)
+                    _task_tracker.update_threadsafe(
+                        tracker_key,
+                        summary,
+                        min_edit_interval=5.0,
+                    )
+                    state = str(payload.get("state") or "")
+                    if state in ("running", "planning"):
+
+                        def _poll_pi_project():
+                            from PiOrchestrator.pi_project import (
+                                pi_project_status as _pi_project_status,
+                            )
+
+                            raw = _pi_project_status(project_id, None)
+                            try:
+                                polled = _json.loads(raw or "")
+                            except Exception:
+                                polled = {"error": raw}
+                            polled_summary = str(polled.get("summary") or "").strip()
+                            status = str(polled.get("state") or "")
+                            return TrackerPollResult(
+                                content=polled_summary,
+                                done=(
+                                    status in ("complete", "failed", "cancelled")
+                                    or bool(polled.get("error"))
+                                ),
+                            )
+
+                        _task_tracker.ensure_poller_threadsafe(
+                            tracker_key,
+                            _poll_pi_project,
+                            interval=10.0,
+                            initial_delay=5.0,
+                        )
+                except Exception as _e:
+                    logger.exception("pi project tracker callback error: %s", _e)
+
+            def _combined_tool_complete_callback(
+                _tool_call_id, function_name, function_args, function_result
+            ) -> None:
+                _hf_tracker_send_sync(
+                    _tool_call_id, function_name, function_args, function_result
+                )
+                _pi_project_tracker_send_sync(
+                    _tool_call_id, function_name, function_args, function_result
+                )
+
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
@@ -9934,7 +10001,7 @@ class GatewayRunner:
                     gateway_session_key=session_key,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
-                    tool_complete_callback=_hf_tracker_send_sync,
+                    tool_complete_callback=_combined_tool_complete_callback,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
