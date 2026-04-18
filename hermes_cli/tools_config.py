@@ -74,6 +74,7 @@ CONFIGURABLE_TOOLSETS = [
     ("rl", "🧪 RL Training", "Tinker-Atropos training tools"),
     ("homeassistant", "🏠 Home Assistant", "smart home device control"),
     ("huggingface", "🤗 HuggingFace", "model specs lookup and downloads"),
+    ("pi-orchestrator", "🤖 Pi Project Orchestration", "start/status/comment/cancel coding projects"),
 ]
 
 # Toolsets that are OFF by default for new installs.

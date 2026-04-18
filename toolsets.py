@@ -79,6 +79,11 @@ _HERMES_CORE_TOOLS = [
     "ha_get_state",
     "ha_list_services",
     "ha_call_service",
+    # Pi project orchestration
+    "pi_project_start",
+    "pi_project_status",
+    "pi_project_comment",
+    "pi_project_cancel",
 ]
 
 
@@ -417,6 +422,11 @@ TOOLSETS = {
     "huggingface": {
         "description": "HuggingFace Hub integration — model specs lookup and downloads",
         "tools": ["hf_model_specs", "hf_download", "hf_download_status"],
+        "includes": [],
+    },
+    "pi-orchestrator": {
+        "description": "Pi project orchestration — start, track, and manage coding projects",
+        "tools": ["pi_project_start", "pi_project_status", "pi_project_comment", "pi_project_cancel"],
         "includes": [],
     },
     "hermes-gateway": {
