@@ -323,6 +323,7 @@ from gateway.platforms.base import (
     MessageType,
     merge_pending_message_event,
 )
+from gateway.task_tracker import GatewayTaskTracker, TrackerPollResult
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
@@ -9625,6 +9626,13 @@ class GatewayRunner:
         _status_thread_metadata = (
             {"thread_id": _progress_thread_id} if _progress_thread_id else None
         )
+        _task_tracker = GatewayTaskTracker(
+            owner=self,
+            loop=_loop_for_step,
+            adapter=_status_adapter,
+            chat_id=source.chat_id,
+            metadata=_status_thread_metadata,
+        )
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -9841,90 +9849,39 @@ class GatewayRunner:
                         or "default"
                     )
                     tracker_key = (session_key, job_id)
-                    tracker_store = getattr(self, "_hf_tracker_messages", None)
-                    if tracker_store is None:
-                        tracker_store = {}
-                        self._hf_tracker_messages = tracker_store
-                    task_store = getattr(self, "_hf_tracker_tasks", None)
-                    if task_store is None:
-                        task_store = {}
-                        self._hf_tracker_tasks = task_store
+                    _task_tracker.update_threadsafe(
+                        tracker_key,
+                        summary,
+                        min_edit_interval=0.0,
+                    )
+                    if str(payload.get("status") or "") == "downloading":
 
-                    entry = tracker_store.get(tracker_key, {})
-
-                    async def _send_or_edit_tracker(content: str) -> None:
-                        current = tracker_store.get(tracker_key, {})
-                        msg_id = current.get("message_id")
-                        if msg_id:
-                            result = await _status_adapter.edit_message(
-                                chat_id=source.chat_id,
-                                message_id=msg_id,
-                                content=content,
-                            )
-                            if result.success:
-                                tracker_store[tracker_key] = {
-                                    "message_id": msg_id,
-                                    "last_edit_ts": time.monotonic(),
-                                    "last_summary": content,
-                                }
-                                return
-                        result = await _status_adapter.send(
-                            source.chat_id,
-                            content,
-                            metadata=_status_thread_metadata,
-                        )
-                        if result.success and result.message_id:
-                            tracker_store[tracker_key] = {
-                                "message_id": result.message_id,
-                                "last_edit_ts": time.monotonic(),
-                                "last_summary": content,
-                            }
-
-                    async def _monitor_hf_tracker() -> None:
-                        try:
+                        def _poll_hf_tracker():
                             from HuggingFace.hf_download import (
                                 hf_download_status as _hf_download_status,
                             )
-                            import json as _json
 
-                            while True:
-                                await asyncio.sleep(5.0)
-                                raw = await asyncio.to_thread(
-                                    _hf_download_status, job_id, None
-                                )
-                                try:
-                                    polled = _json.loads(raw or "")
-                                except Exception:
-                                    polled = {"error": raw}
-                                polled_summary = str(
-                                    polled.get("summary") or ""
-                                ).strip()
-                                if polled_summary:
-                                    current = tracker_store.get(tracker_key, {})
-                                    if current.get("last_summary") != polled_summary:
-                                        await _send_or_edit_tracker(polled_summary)
-                                status = str(polled.get("status") or "")
-                                if status in ("complete", "error") or polled.get(
-                                    "error"
-                                ):
-                                    break
-                        finally:
-                            _tasks = getattr(self, "_hf_tracker_tasks", None)
-                            if isinstance(_tasks, dict):
-                                _tasks.pop(tracker_key, None)
-
-                    asyncio.run_coroutine_threadsafe(
-                        _send_or_edit_tracker(summary),
-                        _loop_for_step,
-                    )
-                    if str(payload.get("status") or "") == "downloading":
-                        existing_task = task_store.get(tracker_key)
-                        if not existing_task or existing_task.done():
-                            task = asyncio.run_coroutine_threadsafe(
-                                _monitor_hf_tracker(),
-                                _loop_for_step,
+                            raw = _hf_download_status(job_id, None)
+                            try:
+                                polled = _json.loads(raw or "")
+                            except Exception:
+                                polled = {"error": raw}
+                            polled_summary = str(polled.get("summary") or "").strip()
+                            status = str(polled.get("status") or "")
+                            return TrackerPollResult(
+                                content=polled_summary,
+                                done=(
+                                    status in ("complete", "error")
+                                    or bool(polled.get("error"))
+                                ),
                             )
-                            task_store[tracker_key] = task
+
+                        _task_tracker.ensure_poller_threadsafe(
+                            tracker_key,
+                            _poll_hf_tracker,
+                            interval=5.0,
+                            initial_delay=5.0,
+                        )
                 except Exception as _e:
                     logger.exception("hf tracker callback error: %s", _e)
 
