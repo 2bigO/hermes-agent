@@ -64,6 +64,10 @@ class ChecklistItem:
             return "⛔"
         return "⬜"
 
+    def mark_done(self):
+        self.done = True
+        self.state = TaskState.complete
+
 
 @dataclass
 class TaskEvent:
@@ -156,7 +160,15 @@ class TaskEventBuffer:
             if event.progress_pct is not None:
                 self._progress = event.progress_pct
             if event.checklist is not None:
-                self._checklist = list(event.checklist)
+                existing = {item.id: item for item in self._checklist}
+                new_items = []
+                for item in event.checklist:
+                    old = existing.get(item.id)
+                    if old and old.done:
+                        item.done = True
+                        item.state = TaskState.complete
+                    new_items.append(item)
+                self._checklist = new_items
             if event.eta is not None:
                 self._eta = event.eta
             if event.message is not None:
